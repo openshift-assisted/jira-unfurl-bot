@@ -49,6 +49,11 @@ objects:
                 secretKeyRef:
                   key: ${JIRA_UNFURL_BOT_JIRA_ACCESS_TOKEN}
                   name: ${JIRA_UNFURL_BOT_SECRETS_NAME}
+            - name: INTELLITLDR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  key: ${JIRA_UNFURL_BOT_INTELLITLDR_TOKEN}
+                  name: ${JIRA_UNFURL_BOT_SECRETS_NAME}
 - apiVersion: v1
   kind: Service
   metadata:
@@ -87,6 +92,8 @@ parameters:
   value: "slack-app-token"
 - name: JIRA_UNFURL_BOT_JIRA_ACCESS_TOKEN
   value: "jira-access-token"
+- name: JIRA_UNFURL_BOT_INTELLITLDR_TOKEN
+  value: "intellitldr-token"
 - name: NUMBER_OF_REPLICAS
   value: "1"
 - name: WEBSERVER_PORT
