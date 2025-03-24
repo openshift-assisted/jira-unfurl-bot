@@ -1,9 +1,11 @@
 import logging
 import os
+import re
 import sys
 from urllib.parse import urlparse
 
 import jira
+import requests
 from fastapi import FastAPI, Request
 from jira.resources import Version
 from slack_bolt import App
@@ -12,6 +14,7 @@ from slack_bolt.adapter.fastapi import SlackRequestHandler
 slack_bot_token: str = os.environ["SLACK_BOT_TOKEN"]
 slack_signing_secret: str = os.environ["SLACK_SIGNING_SECRET"]
 jira_access_token: str = os.environ["JIRA_ACCESS_TOKEN"]
+intellitldr_token: str = os.environ["INTELLITLDR_TOKEN"]
 
 app = App(token=slack_bot_token, signing_secret=slack_signing_secret)
 handler = SlackRequestHandler(app)
@@ -29,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 JIRA_SERVER = "https://issues.redhat.com"
+INTELLITLDR_API = "https://intellitldr.corp.redhat.com/api/summarizer/v1/summarize-issue"
 ISSUE_TYPE_TO_COLOR = {
     "Epic": "#4c00b0",
     "Task": "#1c4966",
@@ -50,6 +54,21 @@ ISSUE_TYPE_TO_PRIORITY = {
 MAX_SHOWN_ISSUES_IN_VERSION = 10
 
 jira_client = jira.JIRA(JIRA_SERVER, token_auth=jira_access_token)
+
+
+def get_intellitldr_summary(issue_key: str):
+    if not intellitldr_token:
+        logger.warning("INTELLITLDR_TOKEN environment variable is not set")
+        return None
+    url = f"{INTELLITLDR_API}?key={issue_key}"
+    headers = {"Authorization": f"Bearer {intellitldr_token}"}
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.exception(f"Error fetching IntelliTldr summary for issue {issue_key}: {e}")
+        return None
 
 
 # Check liveness
@@ -91,8 +110,8 @@ def got_link(client, payload) -> None:  # noqa: ANN001
                 )
             else:
                 logger.info(f"No payload generated for URL: {url}")
-        except Exception:
-            logger.exception(f"Error processing URL {url}")
+        except Exception as e:
+            logger.exception(f"Error processing URL {url}: {e}")
 
 
 def get_version_payload(version: Version, url: str):
@@ -141,10 +160,56 @@ def get_version_payload(version: Version, url: str):
 
 def get_issue_payload(issue, url):
     color = ISSUE_TYPE_TO_COLOR.get(issue.fields.issuetype.name, "#025BA6")
+
+    # Create the basic issue information block
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f":jira: *{issue.key}* [*{issue.fields.status.name}*] : {issue.fields.summary}",
+            },
+        }
+    ]
+
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "View AI Summary", "emoji": True},
+                    "action_id": f"view_summary_{issue.key}",
+                    "value": url,
+                }
+            ],
+        }
+    )
+
     return {
         url: {
             "color": color,
-            "blocks": [
+            "blocks": blocks,
+        },
+    }
+
+
+@app.action(re.compile("view_summary_.*"))
+def handle_view_summary(ack, body, client):
+    logger.info(f"Received action payload: {body}")
+    ack()
+    action_id = body["actions"][0]["action_id"]
+    issue_key = action_id.replace("view_summary_", "")
+    url = body["actions"][0]["value"]
+
+    # Get the summary for the issue
+    summary_data = get_intellitldr_summary(issue_key)
+
+    if summary_data:
+        try:
+            issue = jira_client.issue(issue_key)
+            color = ISSUE_TYPE_TO_COLOR.get(issue.fields.issuetype.name, "#025BA6")
+            blocks = [
                 {
                     "type": "section",
                     "text": {
@@ -152,9 +217,22 @@ def get_issue_payload(issue, url):
                         "text": f":jira: *{issue.key}* [*{issue.fields.status.name}*] : {issue.fields.summary}",
                     },
                 },
-            ],
-        },
-    }
+                {"type": "divider"},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*AI Summary*:\n{summary_data['summary']}"}},
+            ]
+
+            client.chat_unfurl(
+                channel=body["channel"]["id"],
+                ts=body["container"]["message_ts"],
+                unfurls={
+                    url: {
+                        "color": color,
+                        "blocks": blocks,
+                    },
+                },
+            )
+        except Exception as e:
+            logger.exception(f"Error updating unfurl with summary: {e}")
 
 
 @api.post("/slack/events")
@@ -165,13 +243,20 @@ async def endpoint(req: Request):
     # Get the headers
     headers = req.headers
 
+    # Log the incoming request for debugging
+    logger.info(f"Received request at /slack/events with content-type: {headers.get('content-type')}")
+
     # Check if this is a URL verification request
     if req.headers.get("content-type") == "application/json":
         body_json = await req.json()
         if body_json.get("type") == "url_verification":
+            logger.info("Handling URL verification challenge")
             return {"challenge": body_json["challenge"]}
 
-    # If not a URL verification, process normally
+    # Log that we're about to handle the request
+    logger.info("Handling request with SlackRequestHandler")
+
+    # Process with the handler (handles both events and interactive components)
     return await handler.handle(req)
 
 
