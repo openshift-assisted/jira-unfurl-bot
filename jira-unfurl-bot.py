@@ -198,9 +198,31 @@ def get_issue_payload(issue, url):
 def handle_view_summary(ack, body, client):
     logger.info(f"Received action payload: {body}")
     ack()
+
     action_id = body["actions"][0]["action_id"]
     issue_key = action_id.replace("view_summary_", "")
     url = body["actions"][0]["value"]
+
+    # Helper: extract channel and timestamp from the payload
+    def extract_container_details(payload):
+        # Try to extract from "container" first
+        if "container" in payload and "message_ts" in payload["container"]:
+            ts = payload["container"]["message_ts"]
+            # Use channel_id from container if available, otherwise fallback to body channel
+            channel_id = payload["container"].get("channel_id", payload["channel"]["id"])
+        # Fallback: use the "message" field's ts
+        elif "message" in payload and "ts" in payload["message"]:
+            ts = payload["message"]["ts"]
+            channel_id = payload["channel"]["id"]
+        else:
+            ts = None
+            channel_id = None
+        return channel_id, ts
+
+    channel_id, ts = extract_container_details(body)
+    if not ts or not channel_id:
+        logger.error("Could not extract message timestamp or channel id from payload.")
+        return
 
     # Get the summary for the issue
     summary_data = get_intellitldr_summary(issue_key)
@@ -222,8 +244,8 @@ def handle_view_summary(ack, body, client):
             ]
 
             client.chat_unfurl(
-                channel=body["channel"]["id"],
-                ts=body["container"]["message_ts"],
+                channel=channel_id,
+                ts=ts,
                 unfurls={
                     url: {
                         "color": color,
