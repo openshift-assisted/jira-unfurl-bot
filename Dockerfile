@@ -22,6 +22,10 @@ COPY certs/2015-IT-Root-CA.pem /etc/pki/ca-trust/source/anchors/RH-IT-Root-CA.cr
 COPY certs/2022-IT-Root-CA.pem /etc/pki/ca-trust/source/anchors/2022-IT-Root-CA.pem
 RUN update-ca-trust extract
 
+RUN dnf install -y krb5-workstation
+RUN curl --retry 5 --retry-all-errors -k https://gitlab.cee.redhat.com/it-iam/system-configs/raw/master/krb5/idm/linux-krb5.conf -o /etc/krb5.conf
+ENV KRB5CCNAME="FILE:/tmp/krb5ccname"
+
 ENV REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
 ENV SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
 
